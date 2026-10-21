@@ -14,12 +14,18 @@ import (
 // unmarked one (claude --fork-session, opencode --fork) is read whole and
 // judged by what it holds, which costs a read only for the pairs maybe says
 // look alike (#5320).
-func copySources(dir string, ss []model.Session, maybe func(src, c model.Session) bool) map[int]int {
+func copySources(dir string, ss []model.Session, maybe func(src, c int, sameShape bool) bool) map[int]int {
 	out := map[int]int{}
+	shapes := copyMessageShapes(ss)
 	var unread [][2]int
 	for i, c := range ss {
 		for j, src := range ss {
-			if i == j || c.Harness != src.Harness || !maybe(src, c) {
+			sameShape := shapes[i] == shapes[j]
+			if i == j || c.Harness != src.Harness || !maybe(j, i, sameShape) {
+				continue
+			}
+			if sameShape && c.Kind != "fork" && src.Kind != "fork" && src.Started.Equal(c.Started) {
+				unread = append(unread, [2]int{i, j})
 				continue
 			}
 			if search.SourceOf(ss, src, c, src.Started) && !search.SourceOf(ss, c, src, c.Started) {
@@ -47,8 +53,11 @@ func copySources(dir string, ss []model.Session, maybe func(src, c model.Session
 		return out
 	}
 	whole := map[string]model.Session{}
-	for _, s := range full {
+	wholeShapes := map[string]int{}
+	fullShapes := copyMessageShapes(full)
+	for i, s := range full {
 		whole[s.Harness+":"+s.ID] = s
+		wholeShapes[s.Harness+":"+s.ID] = fullShapes[i]
 	}
 	for _, p := range unread {
 		i, j := p[0], p[1]
@@ -57,11 +66,37 @@ func copySources(dir string, ss []model.Session, maybe func(src, c model.Session
 		}
 		c, okc := whole[ss[i].Harness+":"+ss[i].ID]
 		src, oks := whole[ss[j].Harness+":"+ss[j].ID]
-		if okc && oks && search.CopyOf(c, src) {
+		if okc && oks && wholeShapes[c.Harness+":"+c.ID] != wholeShapes[src.Harness+":"+src.ID] && search.CopyOf(c, src) {
 			out[i] = j
 		}
 	}
 	return out
+}
+
+// copyMessageShapes preserves every field used by CopyOf, including zero-time eligibility.
+func copyMessageShapes(ss []model.Session) []int {
+	shapes := make([]int, len(ss))
+	classes := map[string]int{}
+	var key []byte
+	for i, s := range ss {
+		key = key[:0]
+		for _, m := range s.Messages {
+			key = strconv.AppendQuote(key, m.Role)
+			key = append(key, ':')
+			key = strconv.AppendInt(key, m.Time.UnixNano(), 10)
+			key = append(key, ':')
+			key = strconv.AppendBool(key, m.Time.IsZero())
+			key = append(key, ':')
+			key = strconv.AppendQuote(key, m.Text)
+			key = append(key, '\n')
+		}
+		shape := string(key)
+		if _, ok := classes[shape]; !ok {
+			classes[shape] = len(classes) + 1
+		}
+		shapes[i] = classes[shape]
+	}
+	return shapes
 }
 
 // dropCopiedHits leaves out a hit whose every matched turn sits, at the same
@@ -91,10 +126,20 @@ func dropCopiedHits(dir string, hits []search.Hit) []search.Hit {
 			continue
 		}
 		ss := make([]model.Session, len(at))
+		turns := make([]map[string]bool, len(at))
 		for j, i := range at {
 			ss[j] = hits[i].Session
+			turns[j] = make(map[string]bool, len(ss[j].Messages))
+			for _, m := range ss[j].Messages {
+				if !m.Time.IsZero() {
+					k := m.Role + "\x00" + strconv.FormatInt(m.Time.UnixNano(), 10) + "\x00" + m.Text
+					turns[j][k] = true
+				}
+			}
 		}
-		for j := range copySources(dir, ss, func(src, c model.Session) bool { return heldTurns(src, c) }) {
+		for j := range copySources(dir, ss, func(src, c int, sameShape bool) bool {
+			return (sameShape && len(turns[c]) > 0) || heldTurns(turns[src], turns[c])
+		}) {
 			drop[at[j]] = true
 		}
 	}
@@ -112,34 +157,21 @@ func dropCopiedHits(dir string, hits []search.Hit) []search.Hit {
 
 // heldTurns reports whether every timed message of c is in src, the same role,
 // time and text, and c has at least one.
-func heldTurns(src, c model.Session) bool {
-	key := func(m model.Message) string {
-		return m.Role + "\x00" + strconv.FormatInt(m.Time.UnixNano(), 10) + "\x00" + m.Text
-	}
-	have := make(map[string]bool, len(src.Messages))
-	for _, m := range src.Messages {
-		if !m.Time.IsZero() {
-			have[key(m)] = true
-		}
-	}
-	n := 0
-	for _, m := range c.Messages {
-		if m.Time.IsZero() {
-			continue
-		}
-		if !have[key(m)] {
+func heldTurns(src, c map[string]bool) bool {
+	for key := range c {
+		if !src[key] {
 			return false
 		}
-		n++
 	}
-	return n > 0
+	return len(c) > 0
 }
 
 // markForkTitles prefixes the title of a session listed beside the session it
 // was forked or copied from: both open on the same turn, so `last` showed two
 // rows under one title.
 func markForkTitles(dir string, ss []model.Session) {
-	copies := copySources(dir, ss, func(src, c model.Session) bool {
+	copies := copySources(dir, ss, func(i, j int, _ bool) bool {
+		src, c := ss[i], ss[j]
 		if lastTitle(src) != lastTitle(c) {
 			return false
 		}
