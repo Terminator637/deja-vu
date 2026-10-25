@@ -49,12 +49,12 @@ func TestRecallGlobalOptIn(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("DEJA_RECALL_GLOBAL", tc.env)
-			args, err := json.Marshal(map[string]any{
+			args, argsErr := json.Marshal(map[string]any{
 				"mode": "recall", "q": "match.go tolerance reconcile setting CORPUSACTIVE51", "limit": 20,
 				"project": tc.project, "harness": tc.harness,
 			})
-			if err != nil {
-				t.Fatal(err)
+			if argsErr != nil {
+				t.Fatal(argsErr)
 			}
 			if tc.project == "" && tc.harness == "" {
 				items, _, err := contextSearchItems(dir, "match.go tolerance reconcile setting CORPUSACTIVE51")
