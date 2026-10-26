@@ -15,6 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   against the profile's published schemas and test vectors. `deja mcp` itself
   is unchanged. Register it with `qwen mcp add deja-context deja mcp
   --context-search --timeout 8000 --include-tools context_search` (#5662).
+- `DEJA_RECALL_GLOBAL=1` makes MCP recall, `deja recall` and `deja mcp
+  --context-search` rank every project the same instead of putting the current
+  one first. Unset, nothing changes, and the hooks and the TUI keep their
+  scope. From @Terminator637 (#5674).
+
 ### Changed
 
 - The per-prompt line names the agent the memory came from and how long ago:
